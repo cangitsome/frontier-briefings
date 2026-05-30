@@ -1,0 +1,24 @@
+# Python & Environment
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+
+# Project Specific
+.streamlit/
+
+# Mac OS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
