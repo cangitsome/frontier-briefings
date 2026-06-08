@@ -36,7 +36,7 @@ MODELS = {
 PROVIDER_KEY = {"anthropic": "ANTHROPIC_API_KEY", "google": "GEMINI_API_KEY"}
 
 # Analyst / macro accounts to pull from. Swap in your real targets.
-X_ACCOUNTS = ["TrumpTruthOnX"]
+X_ACCOUNTS = ["TrumpTruthOnX", "amitisinvesting"]
 
 HEADLINES_PER_FEED = 20
 
