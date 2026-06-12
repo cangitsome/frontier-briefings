@@ -66,7 +66,7 @@ DISCLAIMER = (
     "more information.</i></p>"
 )
 
-SYSTEM_PROMPT = """You are writing a short weekly note on behalf of an investment \
+SYSTEM_PROMPT = """You are writing a short note on behalf of an investment \
 research firm, in the firm's collective voice, to a family-office client who trusts \
 the firm's judgment. The team has deep buy-side experience and a knack for spotting \
 shifts before the crowd.
