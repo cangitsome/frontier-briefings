@@ -1,7 +1,7 @@
 """Frontier Briefings — weekly non-consensus research pipeline.
 
 Ingest manual/X/RSS news -> Opus 4.8 analyst pass (with vision)
--> push a formatted draft to Ghost Pro. Runs locally via `streamlit run`.
+-> push a formatted draft to Ghost Pro. Runs locally via `streamlit run frontierbriefings.py`.
 """
 
 import base64
