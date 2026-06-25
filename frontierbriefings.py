@@ -40,14 +40,16 @@ X_ACCOUNTS = ["TrumpTruthOnX", "amitisinvesting"]
 
 HEADLINES_PER_FEED = 20
 
-# Broad, keyless news scan that lets the analyst pick the topics. Reuters first
-# (its native RSS is dead, so via Google News). Edit freely — order matters,
-# Reuters leads the package.
+# Broad, keyless scan: real-link, summary-bearing feeds so the analyst reads more than
+# headlines. WSJ/FT article bodies are paywalled (summaries only here); paste full premium
+# text into the manual feed. Stories are deduped across feeds, so order no longer matters.
 RSS_FEEDS = {
-    "Reuters": "https://news.google.com/rss/search?q=site:reuters.com+when:2d&hl=en-US&gl=US&ceid=US:en",
+    "WSJ Markets": "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+    "WSJ World": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",
+    "FT Markets": "https://www.ft.com/markets?format=rss",
+    "FT Companies": "https://www.ft.com/companies?format=rss",
     "CNBC": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "BBC Business": "https://feeds.bbci.co.uk/news/business/rss.xml",
-    "Google News Business": "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",
 }
 
 # Always needed regardless of model choice. The LLM provider key is added at
@@ -78,6 +80,13 @@ PICK THE TOPICS YOURSELF. Scan everything and choose the 10 most genuinely \
 interesting or important threads. Do not force a predetermined theme — follow what \
 the news actually surfaces this week. Treat the user's pasted \
 articles as your most reliable sources.
+
+READ THE COVERAGE SIGNAL. Each news headline may carry a one-line summary and a \
+"[N feeds]" tag showing how many outlets ran the story. Lean on the summaries; do not \
+merely rewrite headlines. Read the count as a signal, not an endorsement: a high count \
+means the story is already consensus, so scrutinise it harder; a low count can mean \
+genuine edge. Of your ~10 picks, reserve one or two for high-consequence but \
+under-covered ("[1 feed]") stories the crowd is missing.
 
 GO DEEPER THAN THE NEWS. Summarising is not the goal; the value is your thinking. Give \
 each topic its own <h2> section and work through:
@@ -173,31 +182,78 @@ def fetch_tweets(bearer_token):
     return "\n".join(lines)
 
 
+def clean_summary(raw):
+    """RSS <description> carries HTML/CDATA; strip tags, collapse space, and cap length
+    (guards against feeds that dump the full body)."""
+    text = re.sub(r"<[^>]+>", " ", raw)
+    return re.sub(r"\s+", " ", text).strip()[:300]
+
+
+def title_tokens(title):
+    """Significant words (length > 3) used to match near-duplicate stories."""
+    return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if len(w) > 3}
+
+
+def cluster_stories(items):
+    """Greedy near-duplicate clustering by title-token Jaccard. Returns clusters
+    {rep, feeds}: rep is the most citeable/informative member; feeds is the set of
+    sources carrying the story, i.e. its consensus weight."""
+    clusters = []
+    for it in items:
+        for c in clusters:
+            seed, toks = c["seed"], it["tokens"]
+            if toks and seed and len(toks & seed) / len(toks | seed) >= 0.5:
+                c["members"].append(it)
+                c["feeds"].add(it["source"])
+                break
+        else:
+            clusters.append({"members": [it], "feeds": {it["source"]},
+                             "seed": it["tokens"]})
+    for c in clusters:
+        c["rep"] = max(c["members"], key=lambda m: (bool(m["link"]), len(m["summary"])))
+    return clusters
+
+
 def fetch_headlines():
-    """Broad recent-news scan via RSS. Flaky feeds are skipped, not fatal.
-    Returns (text, allowed_urls) — the URLs we handed the model, so any link it
-    later invents can be stripped before publishing."""
-    out = []
-    allowed = set()
+    """Broad recent-news scan via RSS. Flaky feeds (e.g. an FT bot-block) are skipped,
+    not fatal. Near-duplicate stories are collapsed and tagged with how many feeds
+    carried them, so the analyst can read coverage as a consensus signal. Returns
+    (text, allowed_urls) — the URLs we handed the model, so any link it later invents
+    can be stripped before publishing."""
+    items = []
     for label, url in RSS_FEEDS.items():
         try:
             resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
             resp.raise_for_status()
-            items = ET.fromstring(resp.content).findall(".//item")[:HEADLINES_PER_FEED]
+            entries = ET.fromstring(resp.content).findall(".//item")[:HEADLINES_PER_FEED]
         except (requests.RequestException, ET.ParseError) as e:
             log(f"Feed '{label}' failed, skipping: {e}")
             continue
-        out.append(f"## {label}")
-        for it in items:
+        for it in entries:
             title = (it.findtext("title") or "").strip()
+            if not title:
+                continue
             link = (it.findtext("link") or "").strip()
-            # Google News links are JS redirects that don't resolve on click; pass
-            # those headlines title-only so the model never emits a dead link.
-            clickable = link and "news.google.com" not in link
-            if clickable:
-                allowed.add(link)
-            out.append(f"- {title} | {link}" if clickable else f"- {title}")
-        log(f"{label}: {len(items)} headlines.")
+            # Google News links are JS redirects that don't resolve; drop the link so the
+            # model never emits a dead one (defensive, in case such a feed is re-added).
+            if "news.google.com" in link:
+                link = ""
+            items.append({"title": title,
+                          "summary": clean_summary(it.findtext("description") or ""),
+                          "link": link, "source": label, "tokens": title_tokens(title)})
+        log(f"{label}: {len(entries)} headlines.")
+
+    out, allowed = [], set()
+    for c in sorted(cluster_stories(items), key=lambda c: len(c["feeds"]), reverse=True):
+        rep, n = c["rep"], len(c["feeds"])
+        if rep["link"]:
+            allowed.add(rep["link"])
+        line = f"- [{n} feed{'s' * (n > 1)}] {rep['title']}"
+        if rep["summary"]:
+            line += f" — {rep['summary']}"
+        if rep["link"]:
+            line += f" | {rep['link']}"
+        out.append(line)
     return "\n".join(out), allowed
 
 
@@ -356,9 +412,19 @@ def main():
 
     manual_feed = st.text_area(
         "Manual feed",
-        height=240,
-        placeholder="Paste premium news, paywalled excerpts (Bloomberg/WSJ/FT), "
-        "URLs, and your own notes from the week here.",
+        height=260,
+        placeholder=(
+            "Paste the FULL text of premium/paywalled articles (Bloomberg/WSJ/FT). "
+            "Nothing behind a paywall is fetched, so the pasted text is what the analyst "
+            "reads.\n\n"
+            "One article per block, separated by a line with ---. Head each with a source "
+            "tag and its URL so it can be cited:\n\n"
+            "[WSJ] Fed signals patience on cuts\n"
+            "https://www.wsj.com/...\n"
+            "<full article text>\n\n"
+            "---\n\n"
+            "[Note] Our own take: watch freight rates next week..."
+        ),
     )
     uploads = st.file_uploader(
         "Supply-chain charts / diagrams (vision)",
@@ -381,6 +447,10 @@ def main():
 
         st.write("Scanning news feeds...")
         headlines, allowed_links = fetch_headlines()
+        # Trust URLs the user pasted too, so the model can cite them; without this the
+        # link-stripper (which only knows feed URLs) would unwrap every manual citation.
+        allowed_links |= {u.rstrip('.,;:)"\'') for u in
+                          re.findall(r'https?://[^\s<>"]+', manual_feed or "")}
 
         st.write("Encoding screenshots...")
         images = encode_images(uploads)
